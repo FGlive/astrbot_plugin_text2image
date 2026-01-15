@@ -1,24 +1,215 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+"""
+文字转图片插件
+- 自适应高度，手机宽度
+- 支持 emoji（Twemoji）
+- 支持自动撤回
+"""
+
+import asyncio
+import base64
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import LLMResponse
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
+import astrbot.api.message_components as Comp
+
+from .core import TextRenderer
+
+# 尝试导入 aiocqhttp 事件类型
+try:
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+    HAS_AIOCQHTTP = True
+except ImportError:
+    HAS_AIOCQHTTP = False
+    AiocqhttpMessageEvent = None
+
+PLAIN_COMPONENT_TYPES = tuple(
+    getattr(Comp, name)
+    for name in ("Plain", "Text")
+    if hasattr(Comp, name)
+)
+
+
+@register(
+    "astrbot_plugin_text2image",
+    "bvzrays",
+    "文字转图片：将 Bot 的文字回复渲染为图片，支持自动撤回",
+    "1.1.0",
+    "https://github.com/bvzrays/astrbot_plugin_chuanhuatong",
+)
+class Text2ImagePlugin(Star):
+    """文字转图片插件"""
+
+    PLUGIN_ID = "astrbot_plugin_text2image"
+
+    def __init__(self, context: Context, config: Optional[AstrBotConfig] = None):
         super().__init__(context)
+        self._cfg_obj: AstrBotConfig | dict | None = config
+        self._base_dir = Path(__file__).resolve().parent
+        self._font_dir = self._base_dir / "ziti"
+        self._render_semaphore = asyncio.Semaphore(3)
+        self._recall_tasks: list[asyncio.Task] = []
+        logger.info("[文字转图片] 插件已加载")
 
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+    def cfg(self) -> Dict[str, Any]:
+        try:
+            return self._cfg_obj if isinstance(self._cfg_obj, dict) else (self._cfg_obj or {})
+        except Exception:
+            return {}
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+    def _cfg_bool(self, key: str, default: bool) -> bool:
+        val = self.cfg().get(key, default)
+        return bool(val) if not isinstance(val, str) else val.lower() in {"1", "true", "yes", "on"}
 
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        """插件卸载时取消所有撤回任务"""
+        for task in self._recall_tasks:
+            task.cancel()
+        self._recall_tasks.clear()
+
+    def _schedule_recall(self, client, message_id: int):
+        """安排撤回消息"""
+        recall_time = int(self.cfg().get("recall_time", 0))
+        if recall_time <= 0:
+            return
+        
+        async def do_recall():
+            try:
+                await asyncio.sleep(recall_time)
+                await client.delete_msg(message_id=message_id)
+                logger.debug(f"[文字转图片] 已撤回消息: {message_id}")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"[文字转图片] 撤回消息失败: {e}")
+        
+        task = asyncio.create_task(do_recall())
+        task.add_done_callback(lambda t: self._recall_tasks.remove(t) if t in self._recall_tasks else None)
+        self._recall_tasks.append(task)
+
+    async def _render_async(self, text: str) -> Optional[str]:
+        try:
+            renderer = TextRenderer(self.cfg(), self._font_dir)
+            return await asyncio.to_thread(renderer.render, text)
+        except Exception as exc:
+            logger.error("[文字转图片] 渲染失败: %s", exc)
+            return None
+
+    def _chain_to_plain_text(self, chain: list[Any]) -> Optional[str]:
+        if not chain:
+            return None
+        builder: list[str] = []
+        for seg in chain:
+            if PLAIN_COMPONENT_TYPES and isinstance(seg, PLAIN_COMPONENT_TYPES):
+                builder.append(getattr(seg, "text", "") or "")
+            elif hasattr(seg, "text") and seg.__class__.__name__.lower() in {"plain", "text"}:
+                builder.append(getattr(seg, "text", "") or "")
+            else:
+                return None
+        text = "".join(builder).strip()
+        return text if text else None
+
+    @filter.on_decorating_result(priority=-10)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        if not self._cfg_bool("enable_render", True):
+            return
+
+        result = event.get_result()
+        if not result or not result.chain:
+            return
+
+        render_scope = str(self.cfg().get("render_scope", "llm_only")).lower()
+        resp = event.get_extra("llm_resp")
+        is_llm_response = isinstance(resp, LLMResponse)
+
+        if render_scope == "llm_only" and not is_llm_response:
+            return
+
+        text = self._chain_to_plain_text(result.chain)
+        if not text:
+            return
+
+        char_threshold = int(self.cfg().get("render_char_threshold", 0))
+        if char_threshold > 0 and len(text) > char_threshold:
+            return
+
+        async with self._render_semaphore:
+            image_path = await self._render_async(text)
+
+        if not image_path:
+            return
+
+        # 检查是否需要自动撤回
+        recall_enabled = self._cfg_bool("recall_enabled", False)
+        recall_time = int(self.cfg().get("recall_time", 0))
+        
+        logger.debug(f"[文字转图片] recall_enabled={recall_enabled}, recall_time={recall_time}")
+        
+        if recall_enabled and recall_time > 0:
+            # 检查是否是 aiocqhttp 事件类型
+            if HAS_AIOCQHTTP and isinstance(event, AiocqhttpMessageEvent):
+                client = event.bot
+                logger.debug(f"[文字转图片] 检测到 aiocqhttp 事件, client={client}")
+                
+                if client is not None:
+                    try:
+                        group_id = event.get_group_id()
+                        user_id = event.get_sender_id()
+                        
+                        logger.debug(f"[文字转图片] group_id={group_id}, user_id={user_id}")
+                        
+                        # 读取图片并转为 base64（避免容器间文件路径问题）
+                        with open(image_path, 'rb') as f:
+                            img_data = base64.b64encode(f.read()).decode('utf-8')
+                        
+                        # 构建消息（使用 base64）
+                        msg = [{'type': 'image', 'data': {'file': f'base64://{img_data}'}}]
+                        
+                        # 发送消息
+                        if group_id:
+                            send_result = await client.send_group_msg(group_id=int(group_id), message=msg)
+                        else:
+                            send_result = await client.send_private_msg(user_id=int(user_id), message=msg)
+                        
+                        logger.debug(f"[文字转图片] send_result={send_result}")
+                        
+                        # 安排撤回
+                        if send_result:
+                            msg_id = send_result.get('message_id')
+                            if msg_id:
+                                self._schedule_recall(client, int(msg_id))
+                                logger.info(f"[文字转图片] 已安排 {recall_time}s 后撤回消息 {msg_id}")
+                        
+                        # 清空原消息链，阻止重复发送
+                        result.chain.clear()
+                        event.stop_event()
+                        
+                        # 清理临时文件
+                        try:
+                            os.remove(image_path)
+                        except Exception:
+                            pass
+                        return
+                    except Exception as e:
+                        logger.warning(f"[文字转图片] 撤回模式发送失败: {e}，回退普通模式")
+            else:
+                logger.debug(f"[文字转图片] 非 aiocqhttp 事件类型，使用普通模式")
+
+        # 普通模式：替换消息链
+        try:
+            result.chain = [Comp.Image.fromFileSystem(image_path)]
+        except Exception as exc:
+            logger.error("[文字转图片] 创建图片组件失败: %s", exc)
+            try:
+                os.remove(image_path)
+            except Exception:
+                pass
+
+    @filter.on_llm_response(priority=100000)
+    async def save_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
+        event.set_extra("llm_resp", resp)
