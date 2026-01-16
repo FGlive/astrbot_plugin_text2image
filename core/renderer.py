@@ -9,6 +9,9 @@ from PIL import Image, ImageDraw, ImageFont
 from .styles import TextSegment
 from .emoji import EmojiHandler
 
+# 不能出现在行首的标点符号（避头标点）
+NO_LINE_START = set('，。、；：？！）】》」』"\',.;:?!)>]}·…—～')
+
 
 class TextRenderer:
     """文本渲染器"""
@@ -16,7 +19,7 @@ class TextRenderer:
     def __init__(self, config: Dict[str, Any], font_dir: Path):
         self.config = config
         self.font_dir = font_dir
-        self.emoji_handler = EmojiHandler()
+        self.emoji_handler = EmojiHandler(font_dir)
         self._font_cache: Dict[str, ImageFont.FreeTypeFont] = {}
     
     def _get_config(self, key: str, default: Any) -> Any:
@@ -91,9 +94,29 @@ class TextRenderer:
                     line_segments.append((seg, seg_width))
                     current_x += seg_width
                 else:
-                    for char in seg.text:
+                    chars = list(seg.text)
+                    for i, char in enumerate(chars):
                         char_width = int(font.getlength(char))
-                        if current_x + char_width > text_area_width and current_x > 0:
+                        # 检查是否需要换行
+                        need_wrap = current_x + char_width > text_area_width and current_x > 0
+                        # 如果当前字符是避头标点，不换行（让它跟在上一行末尾）
+                        if need_wrap and char in NO_LINE_START:
+                            need_wrap = False
+                        
+                        # 检查是否会导致下一行只有一个字符
+                        # 如果当前是倒数第二个字符，且换行后下一个字符会独占一行，则提前换行
+                        if not need_wrap and i == len(chars) - 2 and line_segments:
+                            next_char = chars[i + 1]
+                            next_width = int(font.getlength(next_char))
+                            # 如果当前字符放下后，下一个字符放不下，会导致单字符独占一行
+                            if current_x + char_width + next_width > text_area_width:
+                                # 提前换行，把当前字符和下一个字符都放到新行
+                                render_lines.append((line_segments, False))
+                                line_segments = []
+                                current_x = 0
+                                need_wrap = False  # 已经换行了
+                        
+                        if need_wrap:
                             render_lines.append((line_segments, False))
                             line_segments = []
                             current_x = 0
@@ -102,6 +125,31 @@ class TextRenderer:
             
             if line_segments:
                 render_lines.append((line_segments, False))
+        
+        # 后处理：避免单个字符独占一行
+        # 如果某行只有一个普通字符（非emoji、非分隔符），把它合并到上一行
+        merged_lines = []
+        for i, (segments, is_empty) in enumerate(render_lines):
+            if is_empty:
+                merged_lines.append((segments, is_empty))
+                continue
+            
+            # 统计内容：排除分隔符(no_wrap)
+            normal_chars = sum(1 for seg, _ in segments if not seg.is_emoji and not seg.no_wrap and seg.text.strip())
+            emoji_count = sum(1 for seg, _ in segments if seg.is_emoji)
+            separator_count = sum(1 for seg, _ in segments if seg.no_wrap)
+            
+            total_items = normal_chars + emoji_count
+            
+            # 如果只有1个普通字符（没有emoji和分隔符）且有上一行可以合并
+            if total_items == 1 and separator_count == 0 and merged_lines and not merged_lines[-1][1]:
+                # 合并到上一行
+                prev_segments, _ = merged_lines[-1]
+                prev_segments.extend(segments)
+            else:
+                merged_lines.append((segments, is_empty))
+        
+        render_lines = merged_lines
         
         # 计算画布高度
         total_height = 0
@@ -125,11 +173,12 @@ class TextRenderer:
             x = real_padding
             for seg, w in segments:
                 if seg.is_emoji:
-                    emoji_img = self.emoji_handler.get_image(seg.text, emoji_size)
+                    emoji_img = self.emoji_handler.render_emoji(seg.text, emoji_size)
                     if emoji_img:
                         emoji_y = y + (line_pixel_height - emoji_size) // 2
                         canvas.paste(emoji_img, (x, emoji_y), emoji_img)
-                    x += w
+                        x += w
+                    # emoji 渲染失败时跳过，不占用空间
                 else:
                     text_y = y + (line_pixel_height - font_height) // 2
                     draw.text((x, text_y), seg.text, font=font, fill=text_rgb)
