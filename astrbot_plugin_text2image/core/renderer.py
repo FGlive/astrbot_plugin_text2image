@@ -835,7 +835,9 @@ class TextRenderer:
                 text_y = line_y + (line_height - font_size) // 2
                 draw_x = text_x
 
-                for idx, (seg, w) in enumerate(line):
+                idx = 0
+                while idx < len(line):
+                    seg, w = line[idx]
                     draw_font = font
                     draw_color = text_rgb
                     current_font_height = self._get_font_height(font, line_height)
@@ -854,25 +856,34 @@ class TextRenderer:
                     seg_y = line_y + (line_height - current_font_height) // 2
 
                     if seg.code:
-                        prev_is_code = idx > 0 and line[idx - 1][0].code
-                        if not prev_is_code:
-                            run_width = w
-                            next_idx = idx + 1
-                            while next_idx < len(line):
-                                next_seg, next_w = line[next_idx]
-                                if not next_seg.code:
-                                    break
-                                run_width += next_w
-                                next_idx += 1
+                        run_text = seg.text
+                        run_width = w
+                        next_idx = idx + 1
+                        while next_idx < len(line) and line[next_idx][0].code:
+                            next_seg, next_w = line[next_idx]
+                            run_text += next_seg.text
+                            run_width += next_w
+                            next_idx += 1
 
-                            pad = max(1, int(2 * scale))
-                            bg_x = draw_x - pad
-                            bg_y = seg_y - 2 * scale
-                            bg_w = run_width + pad * 2
-                            bg_h = current_font_height + 4 * scale
-                            draw.rounded_rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                                                 radius=2 * scale, fill=(235, 235, 235))
+                        pad = max(1, int(2 * scale))
+                        bg_x = draw_x - pad
+                        bg_y = seg_y - 2 * scale
+                        bg_w = run_width + pad * 2
+                        bg_h = current_font_height + 4 * scale
+                        draw.rounded_rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
+                                             radius=2 * scale, fill=(235, 235, 235))
                         draw_color = (60, 60, 60)
+
+                        draw.text((draw_x, seg_y), run_text, font=draw_font, fill=draw_color)
+
+                        if seg.strike:
+                            strike_y = seg_y + current_font_height // 2 - 1
+                            draw.line([(draw_x, strike_y), (draw_x + run_width, strike_y)],
+                                     fill=draw_color, width=max(1, scale))
+
+                        draw_x += run_width
+                        idx = next_idx
+                        continue
 
                     draw.text((draw_x, seg_y), seg.text, font=draw_font, fill=draw_color)
 
@@ -887,6 +898,7 @@ class TextRenderer:
                                  fill=draw_color, width=max(1, scale))
 
                     draw_x += w
+                    idx += 1
 
                 line_y += line_height
 
