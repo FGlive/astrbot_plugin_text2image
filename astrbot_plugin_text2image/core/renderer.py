@@ -135,6 +135,9 @@ class TextRenderer:
 
     def render(self, text: str) -> Optional[str]:
         """渲染文本为图片"""
+        # 兼容 LLM 输出的字面量 \n（仅在无真实换行时处理）
+        if "\\n" in text and "\n" not in text:
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
         width = int(self._get_config("image_width", 375))
         scale = int(self._get_config("image_scale", 2))
         padding = int(self._get_config("padding", 24))
