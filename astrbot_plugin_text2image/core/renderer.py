@@ -230,18 +230,22 @@ class TextRenderer:
                             bullet_text = f"{seg.list_index}."
                         else:
                             bullet_text = "•"
-                        list_bullet_width = int(font.getlength(bullet_text + " "))
+                        # 使用实际渲染宽度计算列表符号宽度
+                        list_bullet_width = sum(self._get_char_render_width(font, c) for c in bullet_text) + int(font.getlength(" "))
                         break
                 effective_width = text_area_width - list_indent_total - list_bullet_width
 
             for seg in segments:
                 if seg.code_block:
-                    line_segments.append((seg, int(font.getlength(seg.text))))
+                    # 使用实际渲染宽度计算 code_block 文本宽度
+                    text_width = sum(self._get_char_render_width(font, c) for c in seg.text)
+                    line_segments.append((seg, text_width))
                     continue
 
                 # 标题片段进入字符级换行处理
                 if seg.is_emoji:
-                    if current_x + emoji_size > effective_width and current_x > 0:
+                    # 添加 2px 安全余量
+                    if current_x + emoji_size > effective_width - 2 and current_x > 0:
                         if list_is_item:
                             if list_continuation_active:
                                 for prev_seg, _ in line_segments:
@@ -255,8 +259,9 @@ class TextRenderer:
                     line_segments.append((seg, emoji_size))
                     current_x += emoji_size
                 elif seg.no_wrap:
-                    seg_width = int(font.getlength(seg.text))
-                    if current_x + seg_width > effective_width and current_x > 0:
+                    # 使用实际渲染宽度计算 no_wrap 文本宽度
+                    seg_width = sum(self._get_char_render_width(font, c) for c in seg.text)
+                    if current_x + seg_width > effective_width - 2 and current_x > 0:
                         if list_is_item:
                             if list_continuation_active:
                                 for prev_seg, _ in line_segments:
@@ -282,15 +287,17 @@ class TextRenderer:
 
                     chars = list(seg.text)
                     for i, char in enumerate(chars):
-                        char_width = int(calc_font.getlength(char))
-                        need_wrap = current_x + char_width > effective_width and current_x > 0
+                        # 使用实际渲染宽度计算，避免字符右侧被裁切
+                        char_width = self._get_char_render_width(calc_font, char, seg.bold)
+                        # 添加 2px 安全余量，避免极端字符切边
+                        need_wrap = current_x + char_width > effective_width - 2 and current_x > 0
                         if need_wrap and char in NO_LINE_START:
                             need_wrap = False
 
                         if not need_wrap and i == len(chars) - 2 and line_segments:
                             next_char = chars[i + 1]
-                            next_width = int(calc_font.getlength(next_char))
-                            if current_x + char_width + next_width > effective_width:
+                            next_width = self._get_char_render_width(calc_font, next_char, seg.bold)
+                            if current_x + char_width + next_width > effective_width - 2:
                                 render_items.append((line_segments, False, False, False, None))
                                 line_segments = []
                                 current_x = 0
@@ -347,12 +354,17 @@ class TextRenderer:
 
                 # 计算该行中的最大字体高度（用于标题行自适应）
                 max_font_height = font_height
+                has_emoji = any(seg.is_emoji for seg, _ in segments)
                 for seg, _ in segments:
                     if seg.heading:
                         heading_size = int(real_font_size * (1.8 - seg.heading * 0.15))
                         heading_font = self._load_font(heading_size)
                         h_height = self._get_font_height(heading_font, heading_size)
                         max_font_height = max(max_font_height, h_height)
+
+                # 如果行中包含 emoji，确保行高能容纳 emoji
+                if has_emoji:
+                    max_font_height = max(max_font_height, emoji_size)
 
                 # 如果最大字体高度大于基础字体高度，调整行高
                 if max_font_height > font_height:
@@ -408,6 +420,7 @@ class TextRenderer:
             # 计算该行的实际行高和最大字体高度
             current_line_height = line_pixel_height
             max_font_height_in_line = font_height
+            has_emoji = any(seg.is_emoji for seg, _ in segments)
 
             for seg, _ in segments:
                 if seg.heading:
@@ -415,6 +428,10 @@ class TextRenderer:
                     heading_font = self._load_font(heading_size)
                     h_height = self._get_font_height(heading_font, heading_size)
                     max_font_height_in_line = max(max_font_height_in_line, h_height)
+
+            # 如果行中包含 emoji，确保行高能容纳 emoji
+            if has_emoji:
+                max_font_height_in_line = max(max_font_height_in_line, emoji_size)
 
             # 根据最大字体高度调整行高
             if max_font_height_in_line > font_height:
@@ -462,7 +479,8 @@ class TextRenderer:
                         # 无序列表：绘制圆点
                         bullet_text = "•"
 
-                    bullet_width = int(font.getlength(bullet_text + " "))
+                    # 使用实际渲染宽度计算列表符号宽度
+                    bullet_width = sum(self._get_char_render_width(font, c) for c in bullet_text) + int(font.getlength(" "))
                     bullet_y = y + (current_line_height - font_height) // 2
                     draw.text((x, bullet_y), bullet_text, font=font, fill=text_rgb)
                     x += bullet_width
@@ -472,7 +490,7 @@ class TextRenderer:
                         bullet_text = f"{list_index}."
                     else:
                         bullet_text = "•"
-                    bullet_width = int(font.getlength(bullet_text + " "))
+                    bullet_width = sum(self._get_char_render_width(font, c) for c in bullet_text) + int(font.getlength(" "))
                     x += bullet_width
 
             for idx, (seg, w) in enumerate(segments):
@@ -571,6 +589,40 @@ class TextRenderer:
         except Exception:
             return fallback
 
+    def _get_char_render_width(self, font: ImageFont.FreeTypeFont, char: str,
+                               is_bold: bool = False) -> int:
+        """获取字符的实际渲染宽度
+
+        使用 font.getbbox() 获取真实边界框宽度，避免字符实际像素宽度大于 advance width
+        导致右侧被裁切。对于粗体字符，额外添加 2px 宽度补偿。
+
+        Args:
+            font: 字体对象
+            char: 单个字符
+            is_bold: 是否为粗体（用于宽度补偿）
+
+        Returns:
+            字符宽度（像素）
+        """
+        try:
+            # 尝试使用 getbbox 获取实际渲染边界
+            bbox = font.getbbox(char)
+            if bbox:
+                left, top, right, bottom = bbox
+                width = right - left
+                # 粗体补偿：粗体绘制时使用多次偏移（±1 像素），需要额外空间
+                if is_bold:
+                    width += 2
+                return width
+        except Exception:
+            pass
+
+        # 回退到 getlength 方法
+        width = int(font.getlength(char))
+        if is_bold:
+            width += 2
+        return width
+
     def _wrap_text_segments_for_render(
             self,
             segments: List[TextSegment],
@@ -596,8 +648,10 @@ class TextRenderer:
             calc_font = mono_font or font if seg.code else font
 
             for char in text:
-                char_width = int(calc_font.getlength(char))
-                need_wrap = current and (current_width + char_width > max_width)
+                # 使用实际渲染宽度计算，避免字符右侧被裁切
+                char_width = self._get_char_render_width(calc_font, char, seg.bold)
+                # 添加 2px 安全余量
+                need_wrap = current and (current_width + char_width > max_width - 2)
                 if need_wrap and char in NO_LINE_START:
                     need_wrap = False
 
