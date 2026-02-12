@@ -1,0 +1,9 @@
+fix(renderer): fix character clipping and emoji line cropping
+
+- add _get_char_render_width() to use actual render width instead of advance width
+- replace all font.getlength() calls with new method for accurate character width
+- adjust line height calculation to include emoji size for emoji-containing lines
+- add 2px width safety margin for all wrap judgments
+- apply 2px bold compensation for bold characters to avoid clipping during offset rendering
+
+fixes character right-edge clipping (e.g., "MoviePilot") and emoji line vertical cropping
