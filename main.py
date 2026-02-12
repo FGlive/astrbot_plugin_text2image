@@ -38,7 +38,7 @@ PLAIN_COMPONENT_TYPES = tuple(
 class Text2ImagePlugin(Star):
     """文字转图片插件"""
 
-    PLUGIN_ID = "astrbot_plugin_text2image"
+    PLUGIN_ID = "astrbot_plugin_text2image_x"
 
     def __init__(self, context: Context, config: Optional[AstrBotConfig] = None):
         super().__init__(context)
@@ -47,7 +47,13 @@ class Text2ImagePlugin(Star):
         self._font_dir = self._base_dir / "ziti"
         self._render_semaphore = asyncio.Semaphore(3)
         self._recall_tasks: list[asyncio.Task] = []
-        logger.info("[文字转图片] 插件已加载")
+        
+        # 扫描 ziti 目录的字体文件
+        self._available_fonts = self._scan_fonts()
+        if self._available_fonts:
+            logger.info(f"[text2image-x] 检测到字体文件: {', '.join(self._available_fonts)}")
+        
+        logger.info("[text2image-x] 插件已加载")
 
     def cfg(self) -> Dict[str, Any]:
         try:
@@ -58,6 +64,28 @@ class Text2ImagePlugin(Star):
     def _cfg_bool(self, key: str, default: bool) -> bool:
         val = self.cfg().get(key, default)
         return bool(val) if not isinstance(val, str) else val.lower() in {"1", "true", "yes", "on"}
+
+    def _scan_fonts(self) -> list[str]:
+        """扫描 ziti 目录的字体文件
+        
+        Returns:
+            字体文件名列表（不含路径）
+        """
+        font_extensions = {".otf", ".ttf", ".ttc"}
+        available_fonts = []
+        
+        if not self._font_dir.exists():
+            logger.debug(f"[text2image-x] 字体目录不存在: {self._font_dir}")
+            return available_fonts
+        
+        try:
+            for file_path in self._font_dir.iterdir():
+                if file_path.is_file() and file_path.suffix.lower() in font_extensions:
+                    available_fonts.append(file_path.name)
+        except Exception as e:
+            logger.warning(f"[text2image-x] 扫描字体目录失败: {e}")
+        
+        return sorted(available_fonts)
 
     async def terminate(self):
         """插件卸载时取消所有撤回任务"""
@@ -75,11 +103,11 @@ class Text2ImagePlugin(Star):
             try:
                 await asyncio.sleep(recall_time)
                 await client.delete_msg(message_id=message_id)
-                logger.debug(f"[文字转图片] 已撤回消息: {message_id}")
+                logger.debug(f"[text2image-x] 已撤回消息: {message_id}")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.debug(f"[文字转图片] 撤回消息失败: {e}")
+                logger.debug(f"[text2image-x] 撤回消息失败: {e}")
         
         task = asyncio.create_task(do_recall())
         task.add_done_callback(lambda t: self._recall_tasks.remove(t) if t in self._recall_tasks else None)
@@ -90,7 +118,7 @@ class Text2ImagePlugin(Star):
             renderer = TextRenderer(self.cfg(), self._font_dir)
             return await asyncio.to_thread(renderer.render, text)
         except Exception as exc:
-            logger.error("[文字转图片] 渲染失败: %s", exc)
+            logger.error("[text2image-x] 渲染失败: %s", exc)
             return None
 
     def _chain_to_plain_text(self, chain: list[Any]) -> Optional[str]:
@@ -142,7 +170,7 @@ class Text2ImagePlugin(Star):
             with open(image_path, 'rb') as f:
                 img_data = base64.b64encode(f.read()).decode('utf-8')
         except Exception as e:
-            logger.error(f"[文字转图片] 读取图片失败: {e}")
+            logger.error(f"[text2image-x] 读取图片失败: {e}")
             return
         finally:
             # 读取完成后立即删除临时文件
@@ -155,19 +183,19 @@ class Text2ImagePlugin(Star):
         recall_enabled = self._cfg_bool("recall_enabled", False)
         recall_time = int(self.cfg().get("recall_time", 0))
         
-        logger.debug(f"[文字转图片] recall_enabled={recall_enabled}, recall_time={recall_time}")
+        logger.debug(f"[text2image-x] recall_enabled={recall_enabled}, recall_time={recall_time}")
         
         if recall_enabled and recall_time > 0:
             # 检查是否是 aiocqhttp 事件类型
             if HAS_AIOCQHTTP and isinstance(event, AiocqhttpMessageEvent):
                 client = event.bot
-                logger.debug(f"[文字转图片] 检测到 aiocqhttp 事件, client={client}")
+                logger.debug(f"[text2image-x] 检测到 aiocqhttp 事件, client={client}")
                 
                 if client is not None:
                     group_id = event.get_group_id()
                     user_id = event.get_sender_id()
                     
-                    logger.debug(f"[文字转图片] group_id={group_id}, user_id={user_id}")
+                    logger.debug(f"[text2image-x] group_id={group_id}, user_id={user_id}")
                     
                     # 构建消息（使用 base64）
                     msg = [{'type': 'image', 'data': {'file': f'base64://{img_data}'}}]
@@ -179,14 +207,14 @@ class Text2ImagePlugin(Star):
                         else:
                             send_result = await client.send_private_msg(user_id=int(user_id), message=msg)
                         
-                        logger.debug(f"[文字转图片] send_result={send_result}")
+                        logger.debug(f"[text2image-x] send_result={send_result}")
                         
                         # 安排撤回
                         if send_result:
                             msg_id = send_result.get('message_id')
                             if msg_id:
                                 self._schedule_recall(client, int(msg_id))
-                                logger.info(f"[文字转图片] 已安排 {recall_time}s 后撤回消息 {msg_id}")
+                                logger.info(f"[text2image-x] 已安排 {recall_time}s 后撤回消息 {msg_id}")
                         
                         # 清空原消息链，阻止重复发送
                         result.chain.clear()
@@ -196,19 +224,19 @@ class Text2ImagePlugin(Star):
                         error_str = str(e)
                         # 超时错误（1200）消息可能已发送，不回退
                         if 'retcode=1200' in error_str or 'Timeout' in error_str:
-                            logger.warning(f"[文字转图片] 发送超时但消息可能已送达，无法撤回")
+                            logger.warning(f"[text2image-x] 发送超时但消息可能已送达，无法撤回")
                             result.chain.clear()
                             event.stop_event()
                             return
-                        logger.warning(f"[文字转图片] 撤回模式发送失败: {e}，回退普通模式")
+                        logger.warning(f"[text2image-x] 撤回模式发送失败: {e}，回退普通模式")
             else:
-                logger.debug(f"[文字转图片] 非 aiocqhttp 事件类型，使用普通模式")
+                logger.debug(f"[text2image-x] 非 aiocqhttp 事件类型，使用普通模式")
 
         # 普通模式：替换消息链
         try:
             result.chain = [Comp.Image(file=f'base64://{img_data}')]
         except Exception as exc:
-            logger.error("[文字转图片] 创建图片组件失败: %s", exc)
+            logger.error("[text2image-x] 创建图片组件失败: %s", exc)
 
     @filter.on_llm_response(priority=100000)
     async def save_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):

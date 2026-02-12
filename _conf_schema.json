@@ -61,5 +61,17 @@
     "description": "撤回时间（秒）",
     "hint": "消息发送后多少秒自动撤回，0 表示不撤回",
     "default": 30
+  },
+  "font_name": {
+    "type": "string",
+    "description": "主字体文件名",
+    "hint": "字体文件需放置于 ziti 目录，支持 .otf/.ttf/.ttc 格式。留空或文件不存在时使用默认字体 Source_Han_Serif_SC_Light_Light.otf",
+    "default": "Source_Han_Serif_SC_Light_Light.otf"
+  },
+  "mono_font_name": {
+    "type": "string",
+    "description": "等宽字体文件名",
+    "hint": "代码块专用字体，文件需放置于 ziti 目录，支持 .otf/.ttf/.ttc 格式。留空、文件不存在或加载失败时自动回退到系统字体（Consolas/Courier New 等）",
+    "default": ""
   }
 }

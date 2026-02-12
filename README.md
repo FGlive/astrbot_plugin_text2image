@@ -1,5 +1,7 @@
 # 文字转图片
 
+> 本项目基于 https://github.com/Rensr0/astrbot_plugin_text2image 二次修改发布。
+
 AstrBot 插件，将 Bot 文字回复渲染为图片。
 
 ## 功能
@@ -22,8 +24,17 @@ AstrBot 插件，将 Bot 文字回复渲染为图片。
 | line_height | 行高倍数 | 1.6 |
 | bg_color | 背景色 | #ffffff |
 | text_color | 文字色 | #333333 |
+| font_name | 主字体文件名（放置于 ziti 目录） | Source_Han_Serif_SC_Light_Light.otf |
+| mono_font_name | 等宽字体文件名（放置于 ziti 目录） | 空（自动回退系统字体） |
 | recall_enabled | 启用自动撤回 | false |
 | recall_time | 撤回时间（秒） | 30 |
+
+### 字体配置说明
+
+- **字体放置位置**：将字体文件（`.otf` / `.ttf` / `.ttc`）放入插件目录的 `ziti` 文件夹中
+- **主字体 (`font_name`)**：用于普通文本渲染，文件不存在时自动使用默认字体
+- **等宽字体 (`mono_font_name`)**：用于代码块渲染，留空或加载失败时自动回退到系统字体（Consolas、Courier New 等）
+- **字体扫描**：插件加载时会自动扫描 `ziti` 目录并在日志中显示可用字体列表
 
 ## 致谢
 
