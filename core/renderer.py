@@ -469,17 +469,23 @@ class TextRenderer:
 
                 if seg.code and not seg.code_block:
                     prev_is_code = idx > 0 and segments[idx - 1][0].code and not segments[idx - 1][0].code_block
-                    next_is_code = idx < len(segments) - 1 and segments[idx + 1][0].code and not segments[idx + 1][0].code_block
+                    if not prev_is_code:
+                        run_width = w
+                        next_idx = idx + 1
+                        while next_idx < len(segments):
+                            next_seg, next_w = segments[next_idx]
+                            if not next_seg.code or next_seg.code_block:
+                                break
+                            run_width += next_w
+                            next_idx += 1
 
-                    left_pad = 3 * scale if not prev_is_code else 0
-                    right_pad = 3 * scale if not next_is_code else 0
-
-                    bg_x = x - left_pad
-                    bg_y = text_y - 2 * scale
-                    bg_w = w + left_pad + right_pad
-                    bg_h = current_font_height + 4 * scale
-                    draw.rounded_rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                                         radius=2 * scale, fill=(235, 235, 235))
+                        pad = max(1, int(2 * scale))
+                        bg_x = x - pad
+                        bg_y = text_y - 2 * scale
+                        bg_w = run_width + pad * 2
+                        bg_h = current_font_height + 4 * scale
+                        draw.rounded_rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
+                                             radius=2 * scale, fill=(235, 235, 235))
                     draw_color = (60, 60, 60)
 
                 if seg.strike:

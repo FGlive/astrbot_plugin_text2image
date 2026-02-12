@@ -156,10 +156,9 @@ class Text2ImagePlugin(Star):
             return
 
         preview = text.replace("\n", "\\n")
-        log_full_text = self._cfg_bool("log_full_text", False)
-        if not log_full_text and len(preview) > 200:
-            preview = preview[:200] + "..."
-        logger.info(f"[text2image-x] 渲染文本预览: {preview}")
+        keep_llm_log = self._cfg_bool("keep_llm_log", True)
+        if keep_llm_log:
+            logger.info(f"[text2image-x] LLM回复: {preview}")
 
         char_threshold = int(self.cfg().get("render_char_threshold", 0))
         if char_threshold > 0 and len(text) > char_threshold:

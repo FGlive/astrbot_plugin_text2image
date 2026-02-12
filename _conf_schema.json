@@ -62,11 +62,11 @@
     "hint": "消息发送后多少秒自动撤回，0 表示不撤回",
     "default": 30
   },
-  "log_full_text": {
+  "keep_llm_log": {
     "type": "bool",
-    "description": "日志输出完整渲染文本",
-    "hint": "开启后将完整输出 AI 文本内容到日志，可能很长",
-    "default": false
+    "description": "保留原LLM回复日志",
+    "hint": "关闭后不输出原始 LLM 文本日志",
+    "default": true
   },
   "font_name": {
     "type": "string",
