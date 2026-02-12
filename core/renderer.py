@@ -751,6 +751,8 @@ class TextRenderer:
                 line_y += line_height
 
             current_y += card_height + card_margin
+
+        return current_y
     def _save_image(self, canvas, bg_rgb) -> str:
         """保存图片"""
         tmp = tempfile.NamedTemporaryFile(prefix="text2img_", suffix=".jpg", delete=False)
