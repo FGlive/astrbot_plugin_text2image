@@ -26,6 +26,9 @@ class LineContext:
     in_table: bool = False
     table_rows: List[TableRow] = field(default_factory=list)
     table_header_parsed: bool = False
+    em_open_bold: bool = False
+    em_open_italic: bool = False
+    em_pending_bold_close: bool = False
 
 
 def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
@@ -55,6 +58,10 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
     if code_block_match:
         ctx.in_code_block = True
         ctx.code_block_lang = code_block_match.group(1)
+        # 代码块内禁用自动闭合，进入代码块时重置跨行状态
+        ctx.em_open_bold = False
+        ctx.em_open_italic = False
+        ctx.em_pending_bold_close = False
         return []
 
     # 检查分割线 (--- 或 *** 或 ___)
@@ -66,6 +73,11 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
             ctx.table_rows.clear()
             ctx.table_header_parsed = False
             return table_segments
+
+        # 分割线作为样式边界，重置跨行强调状态
+        ctx.em_open_bold = False
+        ctx.em_open_italic = False
+        ctx.em_pending_bold_close = False
         return [TextSegment(text="", horizontal_rule=True)]
 
     # 检查表格
@@ -108,7 +120,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
     if heading_match:
         level = len(heading_match.group(1))
         content = heading_match.group(2)
-        segments = _parse_inline_styles(content)
+        segments = _parse_inline_styles_with_autoclose(content, ctx)
         for seg in segments:
             seg.heading = level
         return segments
@@ -116,7 +128,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
     # 检查引用 (>)
     if text.startswith('>'):
         quote_text = text[1:].lstrip()
-        segments = _parse_inline_styles(quote_text)
+        segments = _parse_inline_styles_with_autoclose(quote_text, ctx)
         for seg in segments:
             seg.quote = True
         return segments
@@ -127,7 +139,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
         indent = unordered_match.group(1)
         content = unordered_match.group(3)
         list_level = len(indent) // 2  # 每2个空格算一级缩进
-        segments = _parse_inline_styles(content)
+        segments = _parse_inline_styles_with_autoclose(content, ctx)
         for seg in segments:
             seg.list_item = True
             seg.list_ordered = False
@@ -141,7 +153,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
         index = int(ordered_match.group(2))
         content = ordered_match.group(3)
         list_level = len(indent) // 2  # 每2个空格算一级缩进
-        segments = _parse_inline_styles(content)
+        segments = _parse_inline_styles_with_autoclose(content, ctx)
         for seg in segments:
             seg.list_item = True
             seg.list_ordered = True
@@ -150,7 +162,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
         return segments
 
     # 普通行内解析
-    return _parse_inline_styles(text)
+    return _parse_inline_styles_with_autoclose(text, ctx)
 
 
 def _parse_line(text: str, ctx: LineContext) -> list[TextSegment]:
@@ -163,7 +175,7 @@ def _parse_line(text: str, ctx: LineContext) -> list[TextSegment]:
     if heading_match:
         level = len(heading_match.group(1))
         content = heading_match.group(2)
-        segments = _parse_inline_styles(content)
+        segments = _parse_inline_styles_with_autoclose(content, ctx)
         for seg in segments:
             seg.heading = level
         return segments
@@ -171,12 +183,12 @@ def _parse_line(text: str, ctx: LineContext) -> list[TextSegment]:
     # 检查引用
     if text.startswith('>'):
         quote_text = text[1:].lstrip()
-        segments = _parse_inline_styles(quote_text)
+        segments = _parse_inline_styles_with_autoclose(quote_text, ctx)
         for seg in segments:
             seg.quote = True
         return segments
 
-    return _parse_inline_styles(text)
+    return _parse_inline_styles_with_autoclose(text, ctx)
 
 
 def _serialize_table(ctx: LineContext) -> list[TextSegment]:
@@ -236,6 +248,28 @@ def _serialize_table(ctx: LineContext) -> list[TextSegment]:
     return result_segments
 
 
+def _parse_inline_styles_with_autoclose(text: str, ctx: LineContext) -> list[TextSegment]:
+    """按上下文自动闭合强调样式后解析行内样式。"""
+    if not text:
+        return []
+
+    normalized = _normalize_escaped_asterisk_for_autoclose(text)
+    segments, next_bold, next_italic, next_pending_bold_close = _parse_line_with_emphasis_state(
+        normalized,
+        ctx.em_open_bold,
+        ctx.em_open_italic,
+        ctx.em_pending_bold_close,
+    )
+
+    for seg in segments:
+        seg.text = seg.text.replace("＊", "*")
+
+    ctx.em_open_bold = next_bold
+    ctx.em_open_italic = next_italic
+    ctx.em_pending_bold_close = next_pending_bold_close
+    return _merge_segments(segments)
+
+
 def _parse_inline_styles(text: str) -> list[TextSegment]:
     """解析行内样式"""
     if not text:
@@ -243,6 +277,105 @@ def _parse_inline_styles(text: str) -> list[TextSegment]:
 
     segments = _parse_recursive(text)
     return _merge_segments(segments)
+
+
+def _normalize_escaped_asterisk_for_autoclose(text: str) -> str:
+    """保护转义星号，避免被自动闭合误判。"""
+    if "\\*" not in text:
+        return text
+    return text.replace("\\*", "＊")
+
+
+def _parse_line_with_emphasis_state(text: str,
+                                    bold_open: bool,
+                                    italic_open: bool,
+                                    pending_bold_close: bool) -> tuple[list[TextSegment], bool, bool, bool]:
+    """按顺序解析文本并维护跨行强调状态。"""
+    segments: list[TextSegment] = []
+    buffer: list[str] = []
+    in_code = False
+    i = 0
+
+    def flush_buffer():
+        if not buffer:
+            return
+
+        value = ''.join(buffer)
+        safe_value = value.replace('*', '＊')
+        parsed = _parse_inline_styles(safe_value)
+        if not parsed:
+            parsed = [TextSegment(text=safe_value)]
+
+        for seg in parsed:
+            seg.text = seg.text.replace('＊', '*')
+            if not seg.code and not seg.code_block:
+                if bold_open:
+                    seg.bold = True
+                if italic_open:
+                    seg.italic = True
+            segments.append(seg)
+
+        buffer.clear()
+
+    def has_content_after(start: int) -> bool:
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if ch.isspace() or ch in ('*', '`'):
+                continue
+            return True
+        return False
+
+    while i < len(text):
+        if text[i] == '`':
+            in_code = not in_code
+            buffer.append(text[i])
+            i += 1
+            continue
+
+        if in_code:
+            buffer.append(text[i])
+            i += 1
+            continue
+
+        if text.startswith("**", i):
+            flush_buffer()
+            pending_bold_close = False
+            if bold_open:
+                bold_open = False
+            else:
+                if has_content_after(i + 2) or italic_open:
+                    bold_open = True
+                else:
+                    buffer.append("**")
+            i += 2
+            continue
+
+        if text[i] == '*':
+            flush_buffer()
+            if italic_open:
+                italic_open = False
+                pending_bold_close = False
+            elif pending_bold_close and bold_open and not has_content_after(i + 1):
+                # 支持跨行被拆开的 "**" 结束标记（如 "**重点*\n*"）
+                bold_open = False
+                pending_bold_close = False
+            elif bold_open and not has_content_after(i + 1):
+                # 当前行以单星结束时，标记下一行若仅剩一个星号则补全粗体闭合
+                pending_bold_close = True
+            else:
+                pending_bold_close = False
+                if has_content_after(i + 1) or bold_open:
+                    italic_open = True
+                else:
+                    buffer.append('*')
+            i += 1
+            continue
+
+        buffer.append(text[i])
+        i += 1
+
+    flush_buffer()
+    return segments, bold_open, italic_open, pending_bold_close
 
 
 def _parse_recursive(text: str) -> list[TextSegment]:
