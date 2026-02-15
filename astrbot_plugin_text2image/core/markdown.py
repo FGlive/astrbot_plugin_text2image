@@ -26,6 +26,7 @@ class LineContext:
     in_table: bool = False
     table_rows: List[TableRow] = field(default_factory=list)
     table_header_parsed: bool = False
+    hide_table_first_column_label: bool = False
     em_open_bold: bool = False
     em_open_italic: bool = False
     em_pending_bold_close: bool = False
@@ -216,18 +217,14 @@ def _serialize_table(ctx: LineContext) -> list[TextSegment]:
     if not data_rows:
         data_rows = ctx.table_rows
 
+    hide_first_col_label = bool(ctx.hide_table_first_column_label)
+
     # 为每个单元格生成列表项
     result_segments = []
     for row in data_rows:
         for col_idx, cell in enumerate(row.cells):
             # 获取字段名
             field_name = headers[col_idx] if col_idx < len(headers) else f"字段{col_idx + 1}"
-
-            # 创建标签片段（字段名）
-            label_seg = TextSegment(text=f"{field_name}：")
-            label_seg.list_item = True
-            label_seg.list_ordered = False
-            label_seg.list_level = 0
 
             # 获取单元格内容片段并继承列表属性
             cell_content = []
@@ -236,6 +233,18 @@ def _serialize_table(ctx: LineContext) -> list[TextSegment]:
                 seg.list_ordered = False
                 seg.list_level = 0
                 cell_content.append(seg)
+
+            # 开关：隐藏第一列字段名标签（仅隐藏标签，不隐藏内容）
+            if hide_first_col_label and col_idx == 0:
+                if cell_content and any(seg.text for seg in cell_content):
+                    result_segments.extend(cell_content)
+                continue
+
+            # 创建标签片段（字段名）
+            label_seg = TextSegment(text=f"{field_name}：")
+            label_seg.list_item = True
+            label_seg.list_ordered = False
+            label_seg.list_level = 0
 
             # 如果单元格有内容，合并标签和内容
             if cell_content and any(seg.text for seg in cell_content):

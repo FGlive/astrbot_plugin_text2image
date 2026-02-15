@@ -164,7 +164,8 @@ class TextRenderer:
 
         # 解析所有行
         lines = text.split('\n')
-        ctx = LineContext()
+        hide_first_col_label = bool(self._get_config("hide_table_first_column_label", False))
+        ctx = LineContext(hide_table_first_column_label=hide_first_col_label)
         render_items = []  # (segments, is_empty, is_table, is_hr, table_data)
 
         for line in lines:
