@@ -97,5 +97,11 @@
     "description": "Emoji 失败缓存 TTL（秒）",
     "hint": "下载失败的 emoji 在此时间内不再重复请求，避免反复失败。默认 3600 秒（1 小时）。",
     "default": 3600
+  },
+  "char_width_cache_limit": {
+    "type": "int",
+    "description": "字符宽度缓存上限",
+    "hint": "字符宽度计算的 LRU 缓存条目数，提升长文本渲染性能。默认 8192。",
+    "default": 8192
   }
 }

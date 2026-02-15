@@ -8,6 +8,7 @@
 import asyncio
 import base64
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -47,12 +48,15 @@ class Text2ImagePlugin(Star):
         self._font_dir = self._base_dir / "ziti"
         self._render_semaphore = asyncio.Semaphore(3)
         self._recall_tasks: list[asyncio.Task] = []
-        
+        self._renderer_lock = threading.Lock()
+        self._renderer: Optional[TextRenderer] = None
+        self._renderer_cfg_fp: Optional[tuple[Any, ...]] = None
+
         # 扫描 ziti 目录的字体文件
         self._available_fonts = self._scan_fonts()
         if self._available_fonts:
             logger.info(f"[text2image-x] 检测到字体文件: {', '.join(self._available_fonts)}")
-        
+
         logger.info("[text2image-x] 插件已加载")
 
     def cfg(self) -> Dict[str, Any]:
@@ -113,9 +117,35 @@ class Text2ImagePlugin(Star):
         task.add_done_callback(lambda t: self._recall_tasks.remove(t) if t in self._recall_tasks else None)
         self._recall_tasks.append(task)
 
+    def _build_renderer_cfg_fp(self, cfg: Dict[str, Any]) -> tuple[Any, ...]:
+        keys = (
+            "image_width",
+            "image_scale",
+            "padding",
+            "font_size",
+            "line_height",
+            "bg_color",
+            "text_color",
+            "font_name",
+            "mono_font_name",
+            "emoji_cache_dir",
+            "emoji_timeout",
+            "emoji_failed_ttl",
+        )
+        return tuple(cfg.get(k) for k in keys)
+
+    def _get_renderer(self) -> TextRenderer:
+        cfg = self.cfg()
+        cfg_fp = self._build_renderer_cfg_fp(cfg)
+        with self._renderer_lock:
+            if self._renderer is None or self._renderer_cfg_fp != cfg_fp:
+                self._renderer = TextRenderer(cfg, self._font_dir)
+                self._renderer_cfg_fp = cfg_fp
+            return self._renderer
+
     async def _render_async(self, text: str) -> Optional[str]:
         try:
-            renderer = TextRenderer(self.cfg(), self._font_dir)
+            renderer = self._get_renderer()
             return await asyncio.to_thread(renderer.render, text)
         except Exception as exc:
             logger.error("[text2image-x] 渲染失败: %s", exc)

@@ -1,6 +1,7 @@
 """Emoji 处理器"""
 
 import re
+from collections import OrderedDict
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -68,12 +69,15 @@ class EmojiHandler:
         
         self._cache_dir = Path(cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self._timeout = timeout
         self._failed_ttl = failed_ttl
-        self._cache: Dict[str, Image.Image] = {}
+        self._cache: OrderedDict[str, Image.Image] = OrderedDict()
+        self._cache_max_items = 512
         # 失败缓存从 set 改为 Dict[str, float]，记录时间戳
         self._failed: Dict[str, float] = {}
+        self._failed_cleanup_interval = max(120, min(self._failed_ttl, 3600))
+        self._last_failed_cleanup = 0.0
     
     def split_text(self, text: str) -> List[TextSegment]:
         """将文本拆分为普通文字和 emoji"""
@@ -122,11 +126,17 @@ class EmojiHandler:
         import time
         
         cache_key = f"{emoji}_{size}"
-        
+
+        now = time.time()
+        if now - self._last_failed_cleanup >= self._failed_cleanup_interval:
+            self._cleanup_failed_cache(now)
+
         # 1. 检查内存缓存
         if cache_key in self._cache:
             logger.debug(f"[Emoji] 内存缓存命中: {cache_key}")
-            return self._cache[cache_key].copy()
+            cached = self._cache[cache_key]
+            self._cache.move_to_end(cache_key)
+            return cached.copy()
         
         # 2. 检查失败缓存（带 TTL）
         if emoji in self._failed:
@@ -154,7 +164,7 @@ class EmojiHandler:
                     # 调整到目标大小
                     img = img.resize((size, size), Image.LANCZOS)
                     # 写入内存缓存
-                    self._cache[cache_key] = img
+                    self._remember_cache(cache_key, img)
                     logger.debug(f"[Emoji] 磁盘缓存命中: {cache_file_path}")
                     return img.copy()
             except Exception as e:
@@ -175,7 +185,7 @@ class EmojiHandler:
                     img = img.resize((size, size), Image.LANCZOS)
                     
                     # 写入内存缓存
-                    self._cache[cache_key] = img
+                    self._remember_cache(cache_key, img)
 
                     # 写入磁盘缓存
                     try:
@@ -193,8 +203,22 @@ class EmojiHandler:
         # 6. 所有 URL 都失败，记录失败时间戳
         codepoints_str = ' '.join(f'U+{ord(c):04X}' for c in emoji)
         logger.warning(f"[Emoji] 获取失败: {repr(emoji)} ({codepoints_str}) - {last_error}")
-        self._failed[emoji] = time.time()
+        self._failed[emoji] = now
         return None
+
+    def _remember_cache(self, key: str, image: Image.Image):
+        """记录内存缓存并控制上限。"""
+        self._cache[key] = image
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._cache_max_items:
+            self._cache.popitem(last=False)
+
+    def _cleanup_failed_cache(self, now: float):
+        """清理失败缓存中过期项。"""
+        expired = [k for k, ts in self._failed.items() if now - ts >= self._failed_ttl]
+        for key in expired:
+            self._failed.pop(key, None)
+        self._last_failed_cleanup = now
     
     def _get_twemoji_urls(self, emoji: str) -> list:
         """生成所有可能的 Twemoji URL 格式"""

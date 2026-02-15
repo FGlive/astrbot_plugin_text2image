@@ -1,6 +1,7 @@
 """文本渲染器"""
 
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,6 +41,8 @@ class TextRenderer:
         )
         self._font_cache: Dict[str, ImageFont.FreeTypeFont] = {}
         self._mono_font_cache: Dict[str, ImageFont.FreeTypeFont] = {}
+        self._char_width_cache: OrderedDict[Tuple[int, str, bool], int] = OrderedDict()
+        self._char_width_cache_limit = max(1024, int(self._get_config("char_width_cache_limit", 8192)))
 
     def _get_config(self, key: str, default: Any) -> Any:
         return self.config.get(key, default)
@@ -630,23 +633,31 @@ class TextRenderer:
         Returns:
             字符宽度（像素）
         """
+        cache_key = (id(font), char, is_bold)
+        cached = self._char_width_cache.get(cache_key)
+        if cached is not None:
+            self._char_width_cache.move_to_end(cache_key)
+            return cached
+
         try:
             # 尝试使用 getbbox 获取实际渲染边界
             bbox = font.getbbox(char)
             if bbox:
                 left, top, right, bottom = bbox
                 width = right - left
-                # 粗体补偿：粗体绘制时使用多次偏移（±1 像素），需要额外空间
-                if is_bold:
-                    width += 2
-                return width
+            else:
+                width = int(font.getlength(char))
         except Exception:
-            pass
+            width = int(font.getlength(char))
 
-        # 回退到 getlength 方法
-        width = int(font.getlength(char))
+        # 粗体补偿：粗体绘制时使用多次偏移（±1 像素），需要额外空间
         if is_bold:
             width += 2
+
+        self._char_width_cache[cache_key] = width
+        self._char_width_cache.move_to_end(cache_key)
+        if len(self._char_width_cache) > self._char_width_cache_limit:
+            self._char_width_cache.popitem(last=False)
         return width
 
     def _wrap_text_segments_for_render(
