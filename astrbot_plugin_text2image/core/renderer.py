@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from .styles import TextSegment, TableRow
 from .emoji import EmojiHandler
@@ -126,12 +126,15 @@ class TextRenderer:
         self._mono_font_cache[cache_key] = None
         return None
 
-    def _hex_to_rgb(self, hex_color: str) -> Tuple[int, int, int]:
-        """十六进制转 RGB"""
-        hex_color = hex_color.lstrip('#')
-        if len(hex_color) == 3:
-            hex_color = ''.join(c * 2 for c in hex_color)
-        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    def _hex_to_rgb(self, color_value: str, fallback: str = "#ffffff") -> Tuple[int, int, int]:
+        """颜色字符串转 RGB，兼容十六进制与命名色。"""
+        try:
+            return ImageColor.getrgb(str(color_value).strip())
+        except Exception:
+            try:
+                return ImageColor.getrgb(str(fallback).strip())
+            except Exception:
+                return 255, 255, 255
 
     def render(self, text: str) -> Optional[str]:
         """渲染文本为图片"""
@@ -377,8 +380,8 @@ class TextRenderer:
         canvas_height = total_height + real_padding * 2
 
         # 创建画布
-        bg_rgb = self._hex_to_rgb(bg_color)
-        text_rgb = self._hex_to_rgb(text_color)
+        bg_rgb = self._hex_to_rgb(bg_color, "#ffffff")
+        text_rgb = self._hex_to_rgb(text_color, "#333333")
         canvas = Image.new("RGBA", (real_width, canvas_height), (*bg_rgb, 255))
         draw = ImageDraw.Draw(canvas)
 
