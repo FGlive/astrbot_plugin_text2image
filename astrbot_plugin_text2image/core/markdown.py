@@ -47,9 +47,15 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
     if ctx.in_code_block:
         if text.strip() == '```':
             ctx.in_code_block = False
-            code_content = '\n'.join(ctx.code_lines)
+            code_lines = ctx.code_lines[:]
             ctx.code_lines.clear()
-            return [TextSegment(text=code_content, code_block=True, no_wrap=True)]
+
+            # 将代码块内容按行输出，每行后追加一个强制换行段，避免渲染层把多行压到同一逻辑行
+            segments: list[TextSegment] = []
+            for line in code_lines:
+                segments.append(TextSegment(text=line, code_block=True, no_wrap=True))
+                segments.append(TextSegment(text="", is_newline=True))
+            return segments
         else:
             ctx.code_lines.append(text)
             return []

@@ -195,19 +195,22 @@ class TextRenderer:
             # 处理每个片段
             segments = []
             for seg in md_segments:
+                if getattr(seg, "is_newline", False):
+                    segments.append(seg)
+                    continue
+
                 if seg.code_block:
-                    # 对代码块每行进行 emoji 分割
-                    for code_line in seg.text.split('\n'):
-                        emoji_subs = self.emoji_handler.split_text(code_line)
-                        for es in emoji_subs:
-                            # 保留 code_block 属性
-                            es.code_block = True
-                            es.no_wrap = True
-                            # 如果是 emoji，不设置 code_block（避免等宽字体渲染问题）
-                            if es.is_emoji:
-                                es.code_block = False
-                                es.no_wrap = False
-                            segments.append(es)
+                    # 对代码块每行进行 emoji 分割（markdown.py 已按行拆分；这里只做 emoji 拆分，不再 split('\n')）
+                    emoji_subs = self.emoji_handler.split_text(seg.text)
+                    for es in emoji_subs:
+                        # 保留 code_block 属性
+                        es.code_block = True
+                        es.no_wrap = True
+                        # 如果是 emoji，不设置 code_block（避免等宽字体渲染问题）
+                        if es.is_emoji:
+                            es.code_block = False
+                            es.no_wrap = False
+                        segments.append(es)
                     continue
 
                 if seg.text:
@@ -250,10 +253,32 @@ class TextRenderer:
             effective_width = line_layout["effective_width"]
 
             for seg in segments:
+                if getattr(seg, "is_newline", False):
+                    if line_segments:
+                        if list_is_item and list_continuation_active:
+                            for prev_seg, _ in line_segments:
+                                prev_seg.list_continuation = True
+                        render_items.append((line_segments, False, False, False, None))
+                        line_segments = []
+                        current_x = 0
+                    else:
+                        render_items.append(([], True, False, False, None))
+                    continue
+
                 if seg.code_block:
                     # 使用实际渲染宽度计算 code_block 文本宽度
                     text_width = sum(self._get_char_render_width(font, c) for c in seg.text)
+                    if current_x + text_width > effective_width - 2 and current_x > 0:
+                        if list_is_item:
+                            if list_continuation_active:
+                                for prev_seg, _ in line_segments:
+                                    prev_seg.list_continuation = True
+                            list_continuation_active = True
+                        render_items.append((line_segments, False, False, False, None))
+                        line_segments = []
+                        current_x = 0
                     line_segments.append((seg, text_width))
+                    current_x += text_width
                     continue
 
                 # 标题片段进入字符级换行处理

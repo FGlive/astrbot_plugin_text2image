@@ -26,6 +26,7 @@ class TextSegment:
     list_level: int = 0           # 列表缩进级别
     list_index: int = 0           # 有序列表序号（无序为0）
     list_continuation: bool = False  # 是否列表换行延续
+    is_newline: bool = False      # 是否强制换行
 
 
 @dataclass
