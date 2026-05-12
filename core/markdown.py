@@ -5,14 +5,16 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from .styles import TextSegment, TableRow, TableCell
 
-# 行内样式正则模式（从长到短排序）
+# 行内样式正则模式（从长到短排序；链接/图片必须最先匹配）
 INLINE_PATTERNS = [
+    (r'!\[([^\]]*)\]\(([^)]+)\)', 'image'),    # ![图片](url)
+    (r'\[([^\]]*)\]\(([^)]+)\)', 'link'),       # [链接](url)
     (r'\*\*(.+?)\*\*', 'bold'),      # **粗体**
     (r'__(.+?)__', 'bold'),          # __粗体__
     (r'~~(.+?)~~', 'strike'),        # ~~删除线~~
     (r'``(.+?)``', 'code'),          # ``代码``
     (r'\*(.+?)\*', 'italic'),        # *斜体*
-    (r'_(.+?)_', 'italic'),          # _斜体_
+    (r'(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)', 'italic'),  # _斜体_（需词边界）
     (r'`(.+?)`', 'code'),            # `代码`
 ]
 
@@ -29,6 +31,7 @@ class LineContext:
     hide_table_first_column_label: bool = False
     em_open_bold: bool = False
     em_open_italic: bool = False
+    em_open_strike: bool = False
     em_pending_bold_close: bool = False
 
 
@@ -68,6 +71,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
         # 代码块内禁用自动闭合，进入代码块时重置跨行状态
         ctx.em_open_bold = False
         ctx.em_open_italic = False
+        ctx.em_open_strike = False
         ctx.em_pending_bold_close = False
         return []
 
@@ -84,6 +88,7 @@ def parse_markdown(text: str, ctx: LineContext = None) -> list[TextSegment]:
         # 分割线作为样式边界，重置跨行强调状态
         ctx.em_open_bold = False
         ctx.em_open_italic = False
+        ctx.em_open_strike = False
         ctx.em_pending_bold_close = False
         return [TextSegment(text="", horizontal_rule=True)]
 
@@ -268,19 +273,21 @@ def _parse_inline_styles_with_autoclose(text: str, ctx: LineContext) -> list[Tex
     if not text:
         return []
 
-    normalized = _normalize_escaped_asterisk_for_autoclose(text)
-    segments, next_bold, next_italic, next_pending_bold_close = _parse_line_with_emphasis_state(
+    normalized = _normalize_escaped_for_recursive(text)
+    segments, next_bold, next_italic, next_strike, next_pending_bold_close = _parse_line_with_emphasis_state(
         normalized,
         ctx.em_open_bold,
         ctx.em_open_italic,
+        ctx.em_open_strike,
         ctx.em_pending_bold_close,
     )
 
     for seg in segments:
-        seg.text = seg.text.replace("＊", "*")
+        seg.text = seg.text.replace("＊", "*").replace("⎽", "_").replace("⍗", "`").replace("∼", "~").replace("＼", "\\")
 
     ctx.em_open_bold = next_bold
     ctx.em_open_italic = next_italic
+    ctx.em_open_strike = next_strike
     ctx.em_pending_bold_close = next_pending_bold_close
     return _merge_segments(segments)
 
@@ -290,21 +297,30 @@ def _parse_inline_styles(text: str) -> list[TextSegment]:
     if not text:
         return []
 
-    segments = _parse_recursive(text)
+    # 保护转义字符，避免被递归解析器误判
+    normalized = _normalize_escaped_for_recursive(text)
+    segments = _parse_recursive(normalized)
+    for seg in segments:
+        seg.text = seg.text.replace("＊", "*").replace("⎽", "_").replace("⍗", "`").replace("∼", "~").replace("＼", "\\")
     return _merge_segments(segments)
 
 
-def _normalize_escaped_asterisk_for_autoclose(text: str) -> str:
-    """保护转义星号，避免被自动闭合误判。"""
-    if "\\*" not in text:
-        return text
-    return text.replace("\\*", "＊")
+def _normalize_escaped_for_recursive(text: str) -> str:
+    """保护转义字符，避免被递归解析器误判。"""
+    # 顺序：先处理 \\ 避免干扰其他转义
+    result = text.replace("\\\\", "＼")
+    result = result.replace("\\*", "＊")
+    result = result.replace("\\_", "⎽")
+    result = result.replace("\\`", "⍗")
+    result = result.replace("\\~", "∼")
+    return result
 
 
 def _parse_line_with_emphasis_state(text: str,
                                     bold_open: bool,
                                     italic_open: bool,
-                                    pending_bold_close: bool) -> tuple[list[TextSegment], bool, bool, bool]:
+                                    strike_open: bool,
+                                    pending_bold_close: bool) -> tuple[list[TextSegment], bool, bool, bool, bool]:
     """按顺序解析文本并维护跨行强调状态。"""
     segments: list[TextSegment] = []
     buffer: list[str] = []
@@ -316,18 +332,21 @@ def _parse_line_with_emphasis_state(text: str,
             return
 
         value = ''.join(buffer)
-        safe_value = value.replace('*', '＊')
+        # 仅保护状态机已消耗的样式字符（* 和 `），_ 和 ~ 由递归解析器处理
+        safe_value = value.replace('*', '＊').replace('`', '⍗')
         parsed = _parse_inline_styles(safe_value)
         if not parsed:
             parsed = [TextSegment(text=safe_value)]
 
         for seg in parsed:
-            seg.text = seg.text.replace('＊', '*')
+            seg.text = seg.text.replace('＊', '*').replace('⍗', '`')
             if not seg.code and not seg.code_block:
                 if bold_open:
                     seg.bold = True
                 if italic_open:
                     seg.italic = True
+                if strike_open:
+                    seg.strike = True
             segments.append(seg)
 
         buffer.clear()
@@ -335,7 +354,7 @@ def _parse_line_with_emphasis_state(text: str,
     def has_content_after(start: int) -> bool:
         for idx in range(start, len(text)):
             ch = text[idx]
-            if ch.isspace() or ch in ('*', '`'):
+            if ch.isspace() or ch in ('`',):
                 continue
             return True
         return False
@@ -350,6 +369,18 @@ def _parse_line_with_emphasis_state(text: str,
         if in_code:
             buffer.append(text[i])
             i += 1
+            continue
+
+        if text.startswith("~~", i):
+            flush_buffer()
+            if strike_open:
+                strike_open = False
+            else:
+                if has_content_after(i + 2):
+                    strike_open = True
+                else:
+                    buffer.append("~~")
+            i += 2
             continue
 
         if text.startswith("**", i):
@@ -390,7 +421,7 @@ def _parse_line_with_emphasis_state(text: str,
         i += 1
 
     flush_buffer()
-    return segments, bold_open, italic_open, pending_bold_close
+    return segments, bold_open, italic_open, strike_open, pending_bold_close
 
 
 def _parse_recursive(text: str) -> list[TextSegment]:
@@ -424,6 +455,11 @@ def _parse_recursive(text: str) -> list[TextSegment]:
 
             for seg in inner_segments:
                 _apply_style(seg, style_type)
+                if style_type == 'link':
+                    seg.url = match.group(2)
+                elif style_type == 'image':
+                    seg.url = match.group(2)
+                    seg.is_image = True
             segments.extend(inner_segments)
 
             pos += end
@@ -473,7 +509,9 @@ def _merge_segments(segments: list[TextSegment]) -> list[TextSegment]:
                 last.list_ordered == seg.list_ordered and
                 last.list_level == seg.list_level and
                 last.list_index == seg.list_index and
-                last.list_continuation == seg.list_continuation):
+                last.list_continuation == seg.list_continuation and
+                last.url == seg.url and
+                last.is_image == seg.is_image):
             last.text += seg.text
         else:
             merged.append(seg)

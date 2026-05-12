@@ -44,3 +44,4 @@ AstrBot 插件，将 Bot 文字回复渲染为图片。
 
 - [小钊 / astrbot_plugin_recall_xz](https://github.com/zxqtd/astrbot_plugin_recall_xz) - 自动撤回功能参考
 - [传话筒·立绘对话框](https://github.com/bvzrays/astrbot_plugin_chuanhuatong) - 原始项目
+- [LXGW WenKai / 霞鹜文楷](https://github.com/lxgw/LxgwWenKai) - 默认中文字体

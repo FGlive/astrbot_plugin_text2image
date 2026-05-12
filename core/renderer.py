@@ -9,7 +9,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from .styles import TextSegment, TableRow
 from .emoji import EmojiHandler
-from .markdown import parse_markdown, LineContext, parse_table
+from .markdown import parse_markdown, LineContext, parse_table, _serialize_table
 
 # 不能出现在行首的标点符号（避头标点）
 NO_LINE_START = set('，。、；：？！）】》」』"\',.;:?!)>]}·…—～')
@@ -274,8 +274,9 @@ class TextRenderer:
                     continue
 
                 if seg.code_block:
-                    # 使用实际渲染宽度计算 code_block 文本宽度
-                    text_width = sum(self._get_char_render_width(font, c) for c in seg.text)
+                    # 代码块使用等宽字体计算宽度，与绘制阶段保持一致
+                    code_calc_font = self._load_mono_font(real_font_size) or font
+                    text_width = sum(self._get_char_render_width(code_calc_font, c, seg.bold) for c in seg.text)
                     if current_x + text_width > effective_width - 2 and current_x > 0:
                         if list_is_item:
                             if list_continuation_active:
@@ -304,8 +305,7 @@ class TextRenderer:
                     line_segments.append((seg, emoji_size))
                     current_x += emoji_size
                 elif seg.no_wrap:
-                    # 使用实际渲染宽度计算 no_wrap 文本宽度
-                    seg_width = sum(self._get_char_render_width(font, c) for c in seg.text)
+                    seg_width = sum(self._get_char_render_width(font, c, seg.bold) for c in seg.text)
                     if current_x + seg_width > effective_width - 2 and current_x > 0:
                         if list_is_item:
                             if list_continuation_active:
@@ -366,7 +366,9 @@ class TextRenderer:
                                                            list_ordered=seg.list_ordered,
                                                            list_level=seg.list_level,
                                                            list_index=seg.list_index,
-                                                           list_continuation=list_continuation_active), char_width))
+                                                           list_continuation=list_continuation_active,
+                                                           url=seg.url,
+                                                           is_image=seg.is_image), char_width))
                         current_x += char_width
 
             if line_segments:
@@ -374,6 +376,13 @@ class TextRenderer:
                     for prev_seg, _ in line_segments:
                         prev_seg.list_continuation = True
                 render_items.append((line_segments, False, False, False, None))
+
+        # 收尾：如果文本以表格结束，补序列化未刷出的表格数据
+        if ctx.in_table and ctx.table_rows:
+            table_segments = _serialize_table(ctx)
+            if table_segments:
+                render_items.append((table_segments, False, False, False, None))
+            ctx.in_table = False
 
         # 计算画布高度
         total_height = 0
@@ -578,7 +587,15 @@ class TextRenderer:
                 if seg.quote:
                     draw_color = (80, 80, 80)
 
+                if seg.url:
+                    draw_color = (0, 0, 238)
+
                 draw.text((x, text_y), seg.text, font=draw_font, fill=draw_color)
+
+                if seg.url:
+                    underline_y = text_y + current_font_height + max(1, scale)
+                    draw.line([(x, underline_y), (x + w, underline_y)],
+                             fill=(0, 0, 238), width=max(1, scale))
 
                 if seg.strike:
                     strike_y = text_y + current_font_height // 2 - 1
@@ -703,7 +720,8 @@ class TextRenderer:
     ) -> List[List[Tuple[TextSegment, int]]]:
         """将带样式的片段按宽度换行（用于卡片渲染）"""
         if max_width <= 0:
-            line = [(seg, int((mono_font or font).getlength(seg.text)))
+            calc_font = mono_font or font
+            line = [(seg, sum(self._get_char_render_width(calc_font, c, seg.bold) for c in seg.text))
                     for seg in segments if seg.text]
             return [line] if line else [[]]
 
@@ -719,10 +737,7 @@ class TextRenderer:
             calc_font = mono_font or font if seg.code else font
 
             for char in text:
-                # 同时考虑渲染宽度与 advance 宽度，避免相邻背景覆盖字符
-                render_width = self._get_char_render_width(calc_font, char, seg.bold)
-                advance_width = int(calc_font.getlength(char))
-                char_width = max(render_width, advance_width)
+                char_width = self._get_char_render_width(calc_font, char, seg.bold)
                 # 添加 2px 安全余量
                 need_wrap = current and (current_width + char_width > max_width - 2)
                 if need_wrap and char in NO_LINE_START:
@@ -739,6 +754,8 @@ class TextRenderer:
                     italic=seg.italic,
                     code=seg.code,
                     strike=seg.strike,
+                    url=seg.url,
+                    is_image=seg.is_image,
                 ), char_width))
                 current_width += char_width
 
@@ -890,18 +907,20 @@ class TextRenderer:
                     seg, w = line[idx]
                     draw_font = font
                     draw_color = text_rgb
-                    current_font_height = self._get_font_height(font, line_height)
+                    current_font_height = self._get_font_height(font, font_size)
 
                     if seg.code:
                         if mono_font:
                             draw_font = mono_font
-                            current_font_height = self._get_font_height(draw_font, line_height)
+                            current_font_height = self._get_font_height(draw_font, font_size)
                     if seg.italic and not seg.code:
                         draw_color = (max(draw_color[0] - 20, 0),
                                       max(draw_color[1] - 20, 0),
                                       max(draw_color[2] - 20, 0))
                     if seg.strike:
                         draw_color = (160, 160, 160)
+                    if seg.url:
+                        draw_color = (0, 0, 238)
 
                     seg_y = line_y + (line_height - current_font_height) // 2
 
@@ -948,6 +967,8 @@ class TextRenderer:
                         "strike": seg.strike,
                         "width": w,
                         "code": False,
+                        "url": seg.url,
+                        "is_image": seg.is_image,
                     })
 
                     draw_x += w
@@ -969,6 +990,11 @@ class TextRenderer:
                         strike_y = op["y"] + current_font_height // 2 - 1
                         draw.line([(op["x"], strike_y), (op["x"] + op["width"], strike_y)],
                                  fill=op["color"], width=max(1, scale))
+
+                    if op.get("url"):
+                        underline_y = op["y"] + current_font_height + max(1, scale)
+                        draw.line([(op["x"], underline_y), (op["x"] + op["width"], underline_y)],
+                                 fill=(0, 0, 238), width=max(1, scale))
 
                 line_y += line_height
 

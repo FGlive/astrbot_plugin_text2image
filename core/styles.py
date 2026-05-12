@@ -27,6 +27,8 @@ class TextSegment:
     list_index: int = 0           # 有序列表序号（无序为0）
     list_continuation: bool = False  # 是否列表换行延续
     is_newline: bool = False      # 是否强制换行
+    url: str = ""                 # 链接 URL（[text](url) 或 ![alt](url)）
+    is_image: bool = False        # 是否为图片语法
 
 
 @dataclass
