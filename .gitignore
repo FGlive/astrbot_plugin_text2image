@@ -210,5 +210,11 @@ __marimo__/
 .serena/
 .spec-workflow/
 
+# Claude Code
+.claude/
+
+# Emoji cache
+.emoji-cache/
+
 # Build artifacts
 *.zip
